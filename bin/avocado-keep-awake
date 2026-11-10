@@ -110,32 +110,101 @@ cycle() {
   set_mode ${MODES[$(( i % ${#MODES} + 1 ))]}
 }
 
+# ---- theme --------------------------------------------------------------------
+# The avocado palette, shared with avocado-trope (src/theme.rs there): same theme
+# ids, same colors, same roles. Order per theme:
+#   canvas surface muted subtle accent text success error warn
+# A color is #rrggbb, iN (256-color index), aN (ANSI color N) or - (terminal default).
+typeset -A THEMES=(
+  dracula     '#21222c #282a36 #44475a #6272a4 #ff79c6 #f8f8f2 #50fa7b #ff5555 #f1fa8c'
+  catppuccin  '#181825 #1e1e2e #45475a #7f849c #f5c2e7 #cdd6f4 #a6e3a1 #f38ba8 #f9e2af'
+  tokyo-night '#16161e #1a1b26 #3b4261 #565f89 #e0af68 #c0caf5 #9ece6a #f7768e #e0af68'
+  gruvbox     '#1d2021 #282828 #504945 #928374 #fabd2f #ebdbb2 #b8bb26 #fb4934 #fabd2f'
+  nord        '#242933 #2e3440 #434c5e #616e88 #ebcb8b #eceff4 #a3be8c #bf616a #ebcb8b'
+  classic     'i233 i234 i237 i240 i178 i231 i71 i167 i214'
+  terminal    '- - a8 a8 a4 - a2 a1 a3'
+)
+ROLES=(canvas surface muted subtle accent text success error warn)
+
+# Map a theme name to an id above, the way avocado-trope does: herdr's
+# tokyo-night-storm, catppuccin-mocha, gruvbox-dark… work, light variants use terminal.
+theme_id() {
+  local n=${${1:l}//[_ ]/-}
+  if [[ -n ${(M)${(s:-:)n}:#(latte|day|light|dawn)} ]]; then n=terminal
+  elif [[ $n == tokyo* ]]; then n=tokyo-night
+  elif [[ $n == catppuccin* ]]; then n=catppuccin
+  elif [[ $n == gruvbox* ]]; then n=gruvbox
+  elif [[ $n == (zoetrope|default) ]]; then n=classic
+  fi
+  [[ -n ${THEMES[$n]-} ]] && print -r -- $n
+}
+
+# First match wins: $AVOCADO_KEEP_AWAKE_THEME or $AVOCADO_THEME, the theme last
+# picked in avocado-trope, herdr's [theme] name, then dracula.
+pick_theme() {
+  local name id conf=${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}
+  for name in "${AVOCADO_KEEP_AWAKE_THEME-}" "${AVOCADO_THEME-}" \
+      "$(head -n1 "${XDG_CONFIG_HOME:-$HOME/.config}/avocado-trope/theme" 2>/dev/null)" \
+      "$(awk '/^\[/{t=($0=="[theme]");next} t && /^[ \t]*name[ \t]*=/{sub(/^[^=]*=[ \t]*/,"");sub(/[ \t]*#.*/,"");gsub(/["'\'']/,"");print;exit}' "$conf" 2>/dev/null)"; do
+    [[ -n $name ]] && id=$(theme_id $name) && [[ -n $id ]] && { print $id; return; }
+  done
+  print dracula
+}
+
+# SGR for one color: sgr fg|bg COLOR
+sgr() {
+  local base=$([[ $1 == fg ]] && print 3 || print 4) c=$2
+  case $c in
+    '#'*) print -n "${base}8;2;$((16#${c[2,3]}));$((16#${c[4,5]}));$((16#${c[6,7]}))" ;;
+    i*)   print -n "${base}8;5;${c#i}" ;;
+    a*)   (( ${c#a} < 8 )) && print -n "${base}${c#a}" || print -n "$(( base == 3 ? 9 : 10 ))$(( ${c#a} - 8 ))" ;;
+    *)    print -n "${base}9" ;;
+  esac
+}
+
 # ---- panel --------------------------------------------------------------------
 
 panel() {
   sync   # so the header is right even if an event was missed
-  local esc=$'\e' current=$(mode) key rest width=${COLUMNS:-46}
-  local cursor=${MODES[(Ie)$current]}
-  local B=${esc}'[1m' D=${esc}'[2m' R=${esc}'[0m' SEL=${esc}'[7m' DOT=${esc}'[32m'
+  local esc=$'\e' current=$(mode) key rest width=${COLUMNS:-50}
+  local cursor=${MODES[(Ie)$current]} theme=$(pick_theme) i
   (( width > 60 )) && width=60
-  trap 'print -n "${esc}[?25h${esc}[?1049l"; stty echo 2>/dev/null' EXIT
-  print -n "${esc}[?1049h${esc}[?25l"
+  local -A C   # role → foreground SGR on the surface background
+  local -a col=(${=THEMES[$theme]})
+  for i in {1..${#ROLES}}; do C[${ROLES[$i]}]=${col[$i]}; done
+  local BG="${esc}[0;$(sgr bg ${C[surface]})m"
+  st() { print -rn -- "${BG}${esc}[$(sgr fg ${C[$1]})${2:+;$2}m"; }   # st ROLE [1=bold]
+  local TXT=$(st text) DIM=$(st subtle) RULE=$(st muted) KEY=$(st accent 1) BOLD=$(st text 1)
+  local OK=$(st success 1) PILL="${esc}[0;$(sgr bg ${C[accent]});$(sgr fg ${C[canvas]});1m"
+  local SEL="${esc}[0;$(sgr bg ${C[muted]});$(sgr fg ${C[accent]});1m" K="${esc}[K"
+  [[ $theme == terminal ]] && SEL="${esc}[0;7;1m"   # ANSI blue on gray is hard to read
+  trap 'print -n "${esc}[0m${esc}[2J${esc}[?25h${esc}[?1049l"; stty echo 2>/dev/null' EXIT
+  print -n "${esc}[?1049h${esc}[?25l${BG}${esc}[2J"
   stty -echo 2>/dev/null
 
+  pad() { print -rn -- "${(l:$1:: :)}"; }
+
   draw() {
-    local m=$(mode) head="Keep computer awake" i id mark name out
-    local right="${TITLE[$m]} · $(state)" K=${esc}'[K'
+    local m=$(mode) mark name out pill=" avocado-keep-awake " live=$(state) id
+    local right="${TITLE[$m]} · $live"
+    local livec=$([[ $live == Active ]] && print -rn -- "$OK" || print -rn -- "$DIM")
     # Build the frame first and write it in one go over the old one: no flicker.
-    out="${esc}[H"
-    out+=" ${B}${head}${R}${(l:$((width - 3 - ${#head} - ${#right})):: :)}${D}${right}${R}$K"$'\n'
-    out+=" ${D}${(l:$((width - 2))::─:)}${R}$K"$'\n'$K$'\n'
+    out="${esc}[H${BG}$K"$'\n'
+    out+="${BG} ${PILL}${pill}${TXT}$(pad $((width - 2 - ${#pill} - ${#right})))${BOLD}${TITLE[$m]}${DIM} · ${livec}${live}${BG}$K"$'\n'
+    out+="${BG}$K"$'\n'
+    out+="${BG} ${BOLD}Keep computer awake$K"$'\n'
+    out+="${BG} ${RULE}${(l:$((width - 2))::─:)}${BG}$K"$'\n'
     for i in 1 2 3; do
       id=${MODES[$i]}
-      [[ $id == $m ]] && mark="${DOT}●${R}" || mark=" "
-      (( i == cursor )) && name="${SEL} ${TITLE[$id]} ${R}" || name=" ${B}${TITLE[$id]}${R} "
-      out+=" $mark $name$K"$'\n'"     ${D}${HINT[$id]}${R}$K"$'\n'$K$'\n'
+      [[ $id == $m ]] && mark="${OK}●" || mark="${TXT} "
+      if (( i == cursor )); then
+        name="${SEL}▸ ${TITLE[$id]}$(pad $((width - 7 - ${#TITLE[$id]})))${BG}"
+      else
+        name="${BOLD}  ${TITLE[$id]}"
+      fi
+      out+="${BG} ${mark}${BG} ${name}$K"$'\n'"${BG}     ${DIM}${HINT[$id]}$K"$'\n'"${BG}$K"$'\n'
     done
-    out+=" ${D}↑↓ move · enter select · 1-3 pick · esc close${R}$K${esc}[J"
+    out+="${BG} ${KEY}↑↓${DIM} move  ${KEY}⏎${DIM} select  ${KEY}1-3${DIM} pick  ${KEY}esc${DIM} close$K${BG}${esc}[J"
     print -rn -- "$out"
   }
 
@@ -168,6 +237,7 @@ case ${1:-panel} in
   on|agent|off) set_mode $1 ;;
   cycle) cycle ;;
   sync) sync ;;
+  theme) pick_theme ;;
   help|-h|--help) sed -n '2,13s/^# \{0,1\}//p' $0 ;;
   *) print -u2 "unknown command: $1 (try help)"; exit 2 ;;
 esac

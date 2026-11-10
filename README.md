@@ -18,6 +18,7 @@ Long agent runs keep going when you step away, and the Mac still sleeps normally
 
 - [Quick start](#quick-start)
 - [The panel](#the-panel)
+- [Themes](#themes)
 - [Tab bar badge](#tab-bar-badge)
 - [herdr actions](#herdr-actions)
 - [CLI](#cli)
@@ -53,19 +54,20 @@ does nothing until you reload.
 ## The panel
 
 ```
- Keep computer awake              Agent · Active
- ──────────────────────────────────────────────────
+ avocado-keep-awake                 Agent · Active
 
+ Keep computer awake
+ ────────────────────────────────────────────────
     On
      Keep this computer awake continuously
 
- ●  Agent
+ ● ▸ Agent
      Stay awake while an agent is working
 
     Off
      Allow normal system sleep behavior
 
- ↑↓ move · enter select · 1-3 pick · esc close
+ ↑↓ move  ⏎ select  1-3 pick  esc close
 ```
 
 The dot marks the current mode. The header shows the mode and whether the Mac is being held awake
@@ -80,6 +82,26 @@ right now, refreshed every second.
 
 Choosing a mode shows a toast, for example *Keep awake: Agent · Stay awake while an agent is
 working · Active*.
+
+---
+
+## Themes
+
+The panel uses the avocado palette shared with
+[avocado-trope](https://github.com/andymartinezot/avocado-trope): `dracula` (default), `catppuccin`,
+`tokyo-night`, `gruvbox`, `nord`, `classic` and `terminal`, with the same color for the same job in
+every avocado plugin. The accent marks the title and keys, green means awake, and the muted color
+marks the selected row.
+
+It picks the first of:
+
+1. `$AVOCADO_KEEP_AWAKE_THEME`, or `$AVOCADO_THEME` to set every avocado plugin at once
+2. The theme you last switched to in avocado-trope (`t`), so both always match
+3. herdr's own `[theme] name`. Names like `tokyo-night-storm` or `catppuccin-mocha` map to the
+   matching theme, and light variants use `terminal`
+4. `dracula`
+
+`avocado-keep-awake theme` prints the one in use.
 
 ---
 
@@ -122,6 +144,7 @@ avocado-keep-awake status --short
 avocado-keep-awake on|agent|off  # set the mode
 avocado-keep-awake cycle
 avocado-keep-awake sync          # bring caffeinate in line with the mode (herdr runs this for you)
+avocado-keep-awake theme         # the color theme in use
 ```
 
 ---
