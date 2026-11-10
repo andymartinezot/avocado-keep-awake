@@ -16,6 +16,7 @@ Long agent runs keep going when you step away, and the Mac still sleeps normally
 
 ## Contents
 
+- [Demo](#demo)
 - [Quick start](#quick-start)
 - [The panel](#the-panel)
 - [Themes](#themes)
@@ -25,6 +26,22 @@ Long agent runs keep going when you step away, and the Mac still sleeps normally
 - [How it works](#how-it-works)
 - [What it doesn't do](#what-it-doesnt-do)
 - [State and privacy](#state-and-privacy)
+
+---
+
+## Demo
+
+![The avocado-keep-awake panel: Agent mode active while an agent works, then Off, On with a number key, and back to Agent](docs/avocado-keep-awake-demo.gif)
+
+In the recording:
+
+1. **Agent**, the default, is active because an agent is working.
+2. `↓` and `⏎` switch to **Off**, and the Mac may sleep again.
+3. `1` picks **On** directly.
+4. `↓` and `⏎` go back to **Agent**.
+
+The panel is the real one, run against a stand-in herdr that reports one working agent
+(`scripts/demo`). Re-record it with `vhs scripts/demo/demo.tape` (`brew install vhs`).
 
 ---
 

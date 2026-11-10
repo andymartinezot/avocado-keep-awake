@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stands in for herdr in the demo recording: one agent working, nothing else.
+case "$1 $2" in
+  "agent list") echo '[{"agent_status":"working"}]' ;;
+esac
