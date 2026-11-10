@@ -1,0 +1,67 @@
+id = "andymartinezot.avocado-keep-awake"
+name = "avocado-keep-awake"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Keep your Mac awake from herdr: always, only while an agent is working, or never. A small picker panel, actions and an optional tab bar badge."
+platforms = ["macos"]
+
+# No build step: a single zsh script, run from the plugin root.
+
+[[panes]]
+id = "panel"
+title = "Keep computer awake"
+placement = "popup"
+width = 52
+height = 14
+command = ["zsh", "bin/avocado-keep-awake", "panel"]
+
+[[actions]]
+id = "open-panel"
+title = "Keep awake: choose mode"
+description = "Pick On, Agent or Off in a small panel."
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint panel"]
+
+[[actions]]
+id = "cycle"
+title = "Keep awake: next mode"
+description = "On → Agent → Off → On, with a toast showing the new mode."
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["zsh", "bin/avocado-keep-awake", "cycle"]
+
+[[actions]]
+id = "on"
+title = "Keep awake: On"
+description = "Keep this computer awake continuously."
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["zsh", "bin/avocado-keep-awake", "set", "on"]
+
+[[actions]]
+id = "agent"
+title = "Keep awake: Agent"
+description = "Stay awake while an agent is working."
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["zsh", "bin/avocado-keep-awake", "set", "agent"]
+
+[[actions]]
+id = "off"
+title = "Keep awake: Off"
+description = "Allow normal system sleep behavior."
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["zsh", "bin/avocado-keep-awake", "set", "off"]
+
+# Re-check whenever an agent's status can have changed, or its pane went away.
+[[startup]]
+command = ["zsh", "bin/avocado-keep-awake", "sync"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["zsh", "bin/avocado-keep-awake", "sync"]
+
+[[events]]
+on = "pane.closed"
+command = ["zsh", "bin/avocado-keep-awake", "sync"]
+
+[[events]]
+on = "pane.exited"
+command = ["zsh", "bin/avocado-keep-awake", "sync"]

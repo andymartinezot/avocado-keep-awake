@@ -1,0 +1,173 @@
+#!/bin/zsh
+# avocado-keep-awake: keep the Mac awake from herdr, in one of three modes.
+#
+#   on     keep the computer awake continuously
+#   agent  stay awake while at least one herdr agent is working (default)
+#   off    allow normal system sleep
+#
+# Awake means a `caffeinate -i` process: no idle system sleep, the display can
+# still sleep. It is tied to the herdr server (-w) so it never outlives it.
+#
+# usage: avocado-keep-awake [panel|status [--short]|set on|agent|off|cycle|sync|help]
+
+emulate -L zsh
+setopt pipe_fail
+
+PLUGIN_ID=andymartinezot.avocado-keep-awake
+MODES=(on agent off)
+typeset -A TITLE=(on On agent Agent off Off)
+typeset -A HINT=(
+  on    "Keep this computer awake continuously"
+  agent "Stay awake while an agent is working"
+  off   "Allow normal system sleep behavior"
+)
+
+herdr=${HERDR_BIN_PATH:-herdr}
+# Called from herdr the dir is in the environment; from a shell or the tab bar, ask herdr.
+dir=${HERDR_PLUGIN_CONFIG_DIR:-$("$herdr" plugin config-dir $PLUGIN_ID 2>/dev/null)}
+[[ -n $dir ]] || dir=${XDG_CONFIG_HOME:-$HOME/.config}/herdr/plugins/config/$PLUGIN_ID
+mkdir -p "$dir"
+mode_file=$dir/mode
+pid_file=$dir/caffeinate.pid
+lock_dir=$dir/.lock
+
+mode() {
+  local m=$(cat "$mode_file" 2>/dev/null)
+  (( ${MODES[(Ie)$m]} )) && print -r -- $m || print agent
+}
+
+awake_pid() {
+  local pid=$(cat "$pid_file" 2>/dev/null)
+  [[ $pid == <-> ]] && [[ $(ps -p $pid -o comm= 2>/dev/null) == *caffeinate ]] && print $pid
+}
+
+working_agents() {
+  "$herdr" agent list 2>/dev/null | grep -o '"agent_status":"working"' | wc -l | tr -d ' '
+}
+
+herdr_server_pid() {
+  ps -axo pid=,command= | awk '$2 ~ /(^|\/)herdr$/ && $3 == "server" && NF == 3 {print $1; exit}'
+}
+
+hold() {
+  [[ -n $(awake_pid) ]] && return
+  local server=$(herdr_server_pid)
+  caffeinate -i ${server:+-w} ${server:+$server} </dev/null >/dev/null 2>&1 &!
+  print $! >"$pid_file"
+}
+
+release() {
+  local pid=$(awake_pid)
+  [[ -n $pid ]] && kill $pid 2>/dev/null
+  rm -f "$pid_file"
+}
+
+# Bring caffeinate in line with the mode. Events can fire in bursts, so one at a time.
+sync() {
+  local tries=0
+  until mkdir "$lock_dir" 2>/dev/null; do
+    (( ++tries > 50 )) && { rm -rf "$lock_dir"; continue; }   # stale lock
+    sleep 0.05
+  done
+  {
+    case $(mode) in
+      on) hold ;;
+      off) release ;;
+      agent) (( $(working_agents) > 0 )) && hold || release ;;
+    esac
+  } always { rmdir "$lock_dir" 2>/dev/null }
+}
+
+state() { [[ -n $(awake_pid) ]] && print Active || print Inactive; }
+
+status() {
+  local m=$(mode)
+  if [[ ${1:-} == --short ]]; then
+    # For herdr's tab bar: nothing while sleep is allowed.
+    [[ -n $(awake_pid) ]] && print "☕ ${TITLE[$m]}"
+    return 0
+  fi
+  print "${TITLE[$m]} · $(state)"
+  [[ $m == agent ]] && print "$(working_agents) agent(s) working"
+  return 0
+}
+
+toast() {
+  local m=$(mode)
+  "$herdr" notification show "Keep awake: ${TITLE[$m]}" --body "${HINT[$m]} · $(state)" >/dev/null 2>&1
+}
+
+set_mode() {
+  (( ${MODES[(Ie)${1:-}]} )) || { print -u2 "mode must be one of: ${MODES[*]}"; return 2; }
+  print $1 >"$mode_file"
+  sync
+  [[ -n ${HERDR_ENV:-} ]] && toast
+  return 0
+}
+
+cycle() {
+  local i=${MODES[(Ie)$(mode)]}
+  set_mode ${MODES[$(( i % ${#MODES} + 1 ))]}
+}
+
+# ---- panel --------------------------------------------------------------------
+
+panel() {
+  sync   # so the header is right even if an event was missed
+  local esc=$'\e' current=$(mode) key rest width=${COLUMNS:-46}
+  local cursor=${MODES[(Ie)$current]}
+  local B=${esc}'[1m' D=${esc}'[2m' R=${esc}'[0m' SEL=${esc}'[7m' DOT=${esc}'[32m'
+  (( width > 60 )) && width=60
+  trap 'print -n "${esc}[?25h${esc}[?1049l"; stty echo 2>/dev/null' EXIT
+  print -n "${esc}[?1049h${esc}[?25l"
+  stty -echo 2>/dev/null
+
+  draw() {
+    local m=$(mode) head="Keep computer awake" i id mark name out
+    local right="${TITLE[$m]} · $(state)" K=${esc}'[K'
+    # Build the frame first and write it in one go over the old one: no flicker.
+    out="${esc}[H"
+    out+=" ${B}${head}${R}${(l:$((width - 3 - ${#head} - ${#right})):: :)}${D}${right}${R}$K"$'\n'
+    out+=" ${D}${(l:$((width - 2))::─:)}${R}$K"$'\n'$K$'\n'
+    for i in 1 2 3; do
+      id=${MODES[$i]}
+      [[ $id == $m ]] && mark="${DOT}●${R}" || mark=" "
+      (( i == cursor )) && name="${SEL} ${TITLE[$id]} ${R}" || name=" ${B}${TITLE[$id]}${R} "
+      out+=" $mark $name$K"$'\n'"     ${D}${HINT[$id]}${R}$K"$'\n'$K$'\n'
+    done
+    out+=" ${D}↑↓ move · enter select · 1-3 pick · esc close${R}$K${esc}[J"
+    print -rn -- "$out"
+  }
+
+  draw
+  while :; do
+    key=
+    if ! read -s -k 1 -t 1 key; then draw; continue; fi   # refresh the status line
+    case $key in
+      $esc)
+        rest=
+        read -s -k 2 -t 0.05 rest || { [[ -z $rest ]] && return 0; }
+        case $rest in
+          '[A'|'OA') (( cursor > 1 )) && (( cursor-- )) ;;
+          '[B'|'OB') (( cursor < 3 )) && (( cursor++ )) ;;
+        esac ;;
+      k) (( cursor > 1 )) && (( cursor-- )) ;;
+      j) (( cursor < 3 )) && (( cursor++ )) ;;
+      [123]) cursor=$key; set_mode ${MODES[$cursor]}; return 0 ;;
+      $'\n'|$'\r'|' ') set_mode ${MODES[$cursor]}; return 0 ;;
+      q) return 0 ;;
+    esac
+    draw
+  done
+}
+
+case ${1:-panel} in
+  panel) panel ;;
+  status) status ${2:-} ;;
+  set) set_mode ${2:-} ;;
+  on|agent|off) set_mode $1 ;;
+  cycle) cycle ;;
+  sync) sync ;;
+  help|-h|--help) sed -n '2,13s/^# \{0,1\}//p' $0 ;;
+  *) print -u2 "unknown command: $1 (try help)"; exit 2 ;;
+esac
