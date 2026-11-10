@@ -88,7 +88,8 @@ working · Active*.
 ## Themes
 
 The panel uses the avocado palette shared with
-[avocado-trope](https://github.com/andymartinezot/avocado-trope): `dracula` (default), `catppuccin`,
+[avocado-trope](https://github.com/andymartinezot/avocado-trope) and
+[avocado-park](https://github.com/andymartinezot/avocado-park): `dracula` (default), `catppuccin`,
 `tokyo-night`, `gruvbox`, `nord`, `classic` and `terminal`, with the same color for the same job in
 every avocado plugin. The accent marks the title and keys, green means awake, and the muted color
 marks the selected row.
