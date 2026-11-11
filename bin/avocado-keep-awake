@@ -52,7 +52,8 @@ herdr_server_pid() {
 hold() {
   [[ -n $(awake_pid) ]] && return
   local server=$(herdr_server_pid)
-  caffeinate -i ${server:+-w} ${server:+$server} </dev/null >/dev/null 2>&1 &!
+  # Ignore SIGHUP: started from the panel, it must outlive the panel's terminal.
+  ( trap '' HUP; exec caffeinate -i ${server:+-w} ${server:+$server} ) </dev/null >/dev/null 2>&1 &!
   print $! >"$pid_file"
 }
 
