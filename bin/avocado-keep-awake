@@ -1,26 +1,32 @@
 #!/bin/zsh
-# avocado-keep-awake: keep the Mac awake from herdr, in one of three modes.
+# avocado-keep-awake: keep the Mac awake from herdr, in one of four modes.
 #
-#   on     keep the computer awake continuously
-#   agent  stay awake while at least one herdr agent is working (default)
-#   off    allow normal system sleep
+#   on        keep the computer awake continuously
+#   agent     stay awake while at least one herdr agent is working (default)
+#   off       allow normal system sleep
+#   schedule  stay awake during a daily window (07:00-19:00 unless set),
+#             and like agent outside it
 #
 # Awake means a `caffeinate -i` process: no idle system sleep, the display can
 # still sleep. It is tied to the herdr server (-w) so it never outlives it.
 #
-# usage: avocado-keep-awake [panel|status [--short]|set on|agent|off|cycle|sync|help]
+# usage: avocado-keep-awake [panel|status [--short]|set MODE|on|agent|off|
+#        schedule [7am-7pm]|cycle|sync|theme|help]
 
 emulate -L zsh
 setopt pipe_fail
+zmodload zsh/datetime
 
 PLUGIN_ID=andymartinezot.avocado-keep-awake
-MODES=(on agent off)
-typeset -A TITLE=(on On agent Agent off Off)
+MODES=(on agent off schedule)
+typeset -A TITLE=(on On agent Agent off Off schedule Schedule)
 typeset -A HINT=(
   on    "Keep this computer awake continuously"
   agent "Stay awake while an agent is working"
   off   "Allow normal system sleep behavior"
 )
+DEFAULT_WINDOW=07:00-19:00
+self=${0:A}
 
 herdr=${HERDR_BIN_PATH:-herdr}
 # Called from herdr the dir is in the environment; from a shell or the tab bar, ask herdr.
@@ -29,12 +35,99 @@ dir=${HERDR_PLUGIN_CONFIG_DIR:-$("$herdr" plugin config-dir $PLUGIN_ID 2>/dev/nu
 mkdir -p "$dir"
 mode_file=$dir/mode
 pid_file=$dir/caffeinate.pid
+window_file=$dir/window
+tick_file=$dir/ticker.pid
 lock_dir=$dir/.lock
 
 mode() {
   local m=$(cat "$mode_file" 2>/dev/null)
   (( ${MODES[(Ie)$m]} )) && print -r -- $m || print agent
 }
+
+hint() {
+  [[ $1 == schedule ]] && print -r -- "Awake $(window_label), else like Agent" || print -r -- ${HINT[$1]}
+}
+
+# ---- schedule window ------------------------------------------------------------
+
+# 7, 7am, 7:30pm, 07:00, 19:00 → minutes since midnight
+parse_time() {
+  local t=${${1:l}//[[:space:].]/} ap= h m
+  [[ $t == *(am|pm) ]] && { ap=${t[-2,-1]}; t=${t[1,-3]}; }
+  [[ $t =~ '^([0-9]{1,2})(:([0-9]{2}))?$' ]] || return 1
+  h=$(( 10#${match[1]} )) m=$(( 10#${match[3]:-0} ))
+  if [[ -n $ap ]]; then
+    (( h >= 1 && h <= 12 )) || return 1
+    (( h %= 12 )); [[ $ap == pm ]] && (( h += 12 ))
+  fi
+  (( h < 24 && m < 60 )) || return 1
+  print $(( h * 60 + m ))
+}
+
+hhmm() { printf '%02d:%02d' $(( $1 / 60 )) $(( $1 % 60 )); }
+
+# "7am-7pm", "07:00 to 19:00", "22:00–06:00" → "420 1140"
+parse_window() {
+  local w=${1//–/-} a b
+  w=${w// to /-}
+  local -a parts=("${(@s:-:)w}")
+  (( ${#parts} == 2 )) && a=$(parse_time $parts[1]) && b=$(parse_time $parts[2]) && (( a != b )) || return 1
+  print "$a $b"
+}
+
+window_mins() { parse_window "$(cat "$window_file" 2>/dev/null)" || parse_window $DEFAULT_WINDOW; }
+
+window_label() { local -a w=($(window_mins)); print -r -- "$(hhmm $w[1])–$(hhmm $w[2])"; }
+
+# Is the clock inside the window? A window like 22:00-06:00 runs past midnight.
+in_window() {
+  local -a w=($(window_mins)) hm
+  hm=(${(s: :)$(strftime '%H %M' $EPOCHSECONDS)})
+  local now=$(( 10#$hm[1] * 60 + 10#$hm[2] ))
+  (( w[1] < w[2] )) && (( now >= w[1] && now < w[2] )) && return 0
+  (( w[1] > w[2] )) && (( now >= w[1] || now < w[2] ))
+}
+
+set_window() {
+  local w
+  w=$(parse_window "$1") || { print -u2 "window must look like 07:00-19:00 or 7am-7pm"; return 2; }
+  w=(${=w})
+  print "$(hhmm $w[1])-$(hhmm $w[2])" >"$window_file"
+}
+
+# The ticker wakes every 30 s while in schedule mode and syncs when the window
+# opens or closes. It checks the wall clock, so it is right after the Mac sleeps,
+# and it exits with the herdr server or when the mode changes.
+ticker_pid() {
+  local pid=$(cat "$tick_file" 2>/dev/null)
+  [[ $pid == <-> ]] && [[ $(ps -p $pid -o command= 2>/dev/null) == *avocado-keep-awake\ tick* ]] && print $pid
+}
+
+start_ticker() {
+  [[ -n $(ticker_pid) ]] && return
+  ( trap '' HUP; exec zsh "$self" tick ) </dev/null >/dev/null 2>&1 &!
+  print $! >"$tick_file"
+}
+
+stop_ticker() {
+  local pid=$(ticker_pid)
+  [[ -n $pid ]] && kill $pid 2>/dev/null
+  rm -f "$tick_file"
+}
+
+tick() {
+  local server=$(herdr_server_pid) was now
+  was=$(in_window && print in)
+  while sleep 30; do
+    [[ $(mode) == schedule ]] || break
+    [[ -n $server ]] && ! kill -0 $server 2>/dev/null && break
+    now=$(in_window && print in)
+    [[ $now != $was ]] && { was=$now; sync; }
+  done
+  [[ $(cat "$tick_file" 2>/dev/null) == $$ ]] && rm -f "$tick_file"
+}
+
+# ---- awake ---------------------------------------------------------------------
 
 awake_pid() {
   local pid=$(cat "$pid_file" 2>/dev/null)
@@ -71,11 +164,14 @@ sync() {
     sleep 0.05
   done
   {
-    case $(mode) in
+    local m=$(mode)
+    case $m in
       on) hold ;;
       off) release ;;
       agent) (( $(working_agents) > 0 )) && hold || release ;;
+      schedule) { in_window || (( $(working_agents) > 0 )) } && hold || release ;;
     esac
+    [[ $m == schedule ]] && start_ticker || stop_ticker
   } always { rmdir "$lock_dir" 2>/dev/null }
 }
 
@@ -89,13 +185,14 @@ status() {
     return 0
   fi
   print "${TITLE[$m]} · $(state)"
-  [[ $m == agent ]] && print "$(working_agents) agent(s) working"
+  [[ $m == schedule ]] && print "Window $(window_label) · $(in_window && print inside || print outside)"
+  [[ $m == (agent|schedule) ]] && print "$(working_agents) agent(s) working"
   return 0
 }
 
 toast() {
   local m=$(mode)
-  "$herdr" notification show "Keep awake: ${TITLE[$m]}" --body "${HINT[$m]} · $(state)" >/dev/null 2>&1
+  "$herdr" notification show "Keep awake: ${TITLE[$m]}" --body "$(hint $m) · $(state)" >/dev/null 2>&1
 }
 
 set_mode() {
@@ -104,6 +201,12 @@ set_mode() {
   sync
   [[ -n ${HERDR_ENV:-} ]] && toast
   return 0
+}
+
+# schedule [WINDOW]: set the window if given, then switch to schedule mode.
+schedule() {
+  if [[ -n ${1:-} ]]; then set_window "$1" || return; fi
+  set_mode schedule
 }
 
 cycle() {
@@ -168,7 +271,7 @@ sgr() {
 panel() {
   sync   # so the header is right even if an event was missed
   local esc=$'\e' current=$(mode) key rest width=${COLUMNS:-50}
-  local cursor=${MODES[(Ie)$current]} theme=$(pick_theme) i
+  local cursor=${MODES[(Ie)$current]} theme=$(pick_theme) i n=${#MODES} note=
   (( width > 60 )) && width=60
   local -A C   # role → foreground SGR on the surface background
   local -a col=(${=THEMES[$theme]})
@@ -195,7 +298,7 @@ panel() {
     out+="${BG}$K"$'\n'
     out+="${BG} ${BOLD}Keep computer awake$K"$'\n'
     out+="${BG} ${RULE}${(l:$((width - 2))::─:)}${BG}$K"$'\n'
-    for i in 1 2 3; do
+    for i in {1..$n}; do
       id=${MODES[$i]}
       [[ $id == $m ]] && mark="${OK}●" || mark="${TXT} "
       if (( i == cursor )); then
@@ -203,10 +306,26 @@ panel() {
       else
         name="${BOLD}  ${TITLE[$id]}"
       fi
-      out+="${BG} ${mark}${BG} ${name}$K"$'\n'"${BG}     ${DIM}${HINT[$id]}$K"$'\n'"${BG}$K"$'\n'
+      out+="${BG} ${mark}${BG} ${name}$K"$'\n'"${BG}     ${DIM}$(hint $id)$K"$'\n'"${BG}$K"$'\n'
     done
-    out+="${BG} ${KEY}↑↓${DIM} move  ${KEY}⏎${DIM} select  ${KEY}1-3${DIM} pick  ${KEY}esc${DIM} close$K${BG}${esc}[J"
+    if [[ -n $note ]]; then out+="${BG} ${DIM}${note}$K${BG}${esc}[J"
+    else out+="${BG} ${KEY}↑↓${DIM} move ${KEY}⏎${DIM} select ${KEY}1-$n${DIM} pick ${KEY}e${DIM} hours ${KEY}esc${DIM} close$K${BG}${esc}[J"
+    fi
     print -rn -- "$out"
+  }
+
+  # e: type a new window on the footer line, then switch to schedule.
+  edit_window() {
+    local line
+    print -rn -- "${esc}[$(( 5 + 3 * n + 1 ));1H${BG} ${BOLD}Hours (e.g. 7am-7pm): ${TXT}$K${esc}[?25h"
+    stty echo 2>/dev/null
+    read -r line
+    stty -echo 2>/dev/null
+    print -n "${esc}[?25l"
+    [[ -z $line ]] && return 1
+    if set_window "$line" 2>/dev/null; then set_mode schedule; return 0; fi
+    note="Not a window: $line (try 07:00-19:00)"
+    return 1
   }
 
   draw
@@ -219,14 +338,16 @@ panel() {
         read -s -k 2 -t 0.05 rest || { [[ -z $rest ]] && return 0; }
         case $rest in
           '[A'|'OA') (( cursor > 1 )) && (( cursor-- )) ;;
-          '[B'|'OB') (( cursor < 3 )) && (( cursor++ )) ;;
+          '[B'|'OB') (( cursor < n )) && (( cursor++ )) ;;
         esac ;;
       k) (( cursor > 1 )) && (( cursor-- )) ;;
-      j) (( cursor < 3 )) && (( cursor++ )) ;;
-      [123]) cursor=$key; set_mode ${MODES[$cursor]}; return 0 ;;
+      j) (( cursor < n )) && (( cursor++ )) ;;
+      [1-4]) cursor=$key; set_mode ${MODES[$cursor]}; return 0 ;;
+      e) edit_window && return 0; draw; continue ;;
       $'\n'|$'\r'|' ') set_mode ${MODES[$cursor]}; return 0 ;;
       q) return 0 ;;
     esac
+    note=
     draw
   done
 }
@@ -236,9 +357,11 @@ case ${1:-panel} in
   status) status ${2:-} ;;
   set) set_mode ${2:-} ;;
   on|agent|off) set_mode $1 ;;
+  schedule) schedule ${2:-} ;;
+  tick) tick ;;
   cycle) cycle ;;
   sync) sync ;;
   theme) pick_theme ;;
-  help|-h|--help) sed -n '2,13s/^# \{0,1\}//p' $0 ;;
+  help|-h|--help) sed -n '2,15s/^# \{0,1\}//p' $0 ;;
   *) print -u2 "unknown command: $1 (try help)"; exit 2 ;;
 esac

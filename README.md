@@ -2,12 +2,12 @@
 
 <h1 align="center">avocado-keep-awake</h1>
 
-**Keep your Mac awake from [herdr](https://herdr.dev): always, only while an agent is working, or never.**
+**Keep your Mac awake from [herdr](https://herdr.dev): always, only while an agent is working, during set hours, or never.**
 Long agent runs keep going when you step away, and the Mac still sleeps normally once they're done.
 
 | | |
 |---|---|
-| **Modes** | **On**: keep the computer awake. **Agent**: stay awake while a herdr agent is working (default). **Off**: normal sleep |
+| **Modes** | **On**: keep the computer awake. **Agent**: stay awake while a herdr agent is working (default). **Off**: normal sleep. **Schedule**: stay awake during set hours, such as 7am to 7pm |
 | **Where** | A small picker panel, herdr actions with toasts, an optional tab bar badge, and a CLI |
 | **How** | One `caffeinate -i` process, tied to the herdr server so it never outlives it |
 | **Needs** | macOS and herdr 0.9.3+. A single zsh script with no build step and nothing to download |
@@ -84,7 +84,10 @@ does nothing until you reload.
     Off
      Allow normal system sleep behavior
 
- ↑↓ move  ⏎ select  1-3 pick  esc close
+    Schedule
+     Awake 07:00–19:00, else like Agent
+
+ ↑↓ move ⏎ select 1-4 pick e hours esc close
 ```
 
 The dot marks the current mode. The header shows the mode and whether the Mac is being held awake
@@ -94,11 +97,36 @@ right now, refreshed every second.
 |---|---|
 | `↑` `↓` / `k` `j` | Move |
 | `⏎` / `space` | Choose the highlighted mode and close |
-| `1` `2` `3` | Choose On, Agent or Off directly |
+| `1` – `4` | Choose On, Agent, Off or Schedule directly |
+| `e` | Type the Schedule hours, such as `7am-7pm`, and switch to Schedule |
 | `esc` / `q` | Close without changing anything |
 
 Choosing a mode shows a toast, for example *Keep awake: Agent · Stay awake while an agent is
 working · Active*.
+
+---
+
+## Schedule
+
+**Schedule** keeps the Mac awake every day between two times, 07:00 to 19:00 unless you change
+them. Outside those hours it works like **Agent**, so a run that is still going at 19:00 isn't cut
+off.
+
+Set the hours with `e` in the panel or from a shell:
+
+```sh
+avocado-keep-awake schedule 7am-7pm        # set the hours and switch to Schedule
+avocado-keep-awake schedule 08:30-18:00
+avocado-keep-awake schedule 22:00-06:00    # past midnight works too
+```
+
+Times can be `7`, `7am`, `7:30pm` or `19:00`, joined by `-` or `to`. While Schedule is on, a small
+background check looks at the clock every 30 seconds and switches when the hours start or end. It
+reads the wall clock, so it is right after the Mac wakes, and it exits with the herdr server or
+when you pick another mode.
+
+It keeps an awake Mac awake; it doesn't wake a sleeping one. If the Mac is already asleep at 07:00,
+it stays asleep until you wake it.
 
 ---
 
@@ -126,7 +154,7 @@ It picks the first of:
 ## Tab bar badge
 
 To see at a glance that the Mac is being held awake, add a command entry to herdr's tab bar. It
-prints `☕ On` or `☕ Agent` while the Mac is held awake, and nothing otherwise:
+prints `☕ On`, `☕ Agent` or `☕ Schedule` while the Mac is held awake, and nothing otherwise:
 
 ```toml
 [ui]
@@ -145,8 +173,8 @@ onto your `PATH` as shown, or use the full path.
 | Action | What it does |
 |---|---|
 | **Keep awake: choose mode** | Opens the panel |
-| **Keep awake: next mode** | On → Agent → Off → On |
-| **Keep awake: On** / **Agent** / **Off** | Sets that mode |
+| **Keep awake: next mode** | On → Agent → Off → Schedule → On |
+| **Keep awake: On** / **Agent** / **Off** / **Schedule** | Sets that mode |
 
 Bind any of them with `type = "plugin_action"` and the action id, for example
 `andymartinezot.avocado-keep-awake.cycle`.
@@ -157,9 +185,10 @@ Bind any of them with `type = "plugin_action"` and the action id, for example
 
 ```sh
 avocado-keep-awake               # the panel
-avocado-keep-awake status        # "Agent · Active" and how many agents are working
+avocado-keep-awake status        # "Agent · Active", the Schedule hours and how many agents are working
 avocado-keep-awake status --short
 avocado-keep-awake on|agent|off  # set the mode
+avocado-keep-awake schedule [7am-7pm]  # Schedule, optionally with new hours
 avocado-keep-awake cycle
 avocado-keep-awake sync          # bring caffeinate in line with the mode (herdr runs this for you)
 avocado-keep-awake theme         # the color theme in use
@@ -187,9 +216,10 @@ avocado-keep-awake theme         # the color theme in use
 
 ## State and privacy
 
-Two small files in the plugin's herdr config directory (`herdr plugin config-dir
-andymartinezot.avocado-keep-awake`): `mode` and `caffeinate.pid`. No network, no other files, and
-the only programs it runs are `herdr`, `caffeinate` and `ps`.
+A few small files in the plugin's herdr config directory (`herdr plugin config-dir
+andymartinezot.avocado-keep-awake`): `mode`, `window` (the Schedule hours), `caffeinate.pid`, and
+`ticker.pid` while Schedule is on. No network, no other files, and
+the only programs it runs are `herdr`, `caffeinate`, `ps` and `sleep`.
 
 ## License
 
